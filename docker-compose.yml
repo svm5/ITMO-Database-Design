@@ -1,0 +1,239 @@
+services:
+  # postgres:
+  #   image: postgres:14    
+  #   hostname: postgres
+  #   ports:
+  #     - 6433:5432
+  #   environment:
+  #     - POSTGRES_USER=$POSTGRES_USER
+  #     - POSTGRES_DB=$POSTGRES_DB
+  #     - POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+  #     - CREATOR_NAME=$CREATOR_NAME
+  #     - CREATOR_PASSWORD=$CREATOR_PASSWORD
+  #     - MY_DB=$MY_DB
+  #     - ANALYST_NAMES=$ANALYST_NAMES
+  #   volumes:
+  #   - ./data:/var/lib/postgresql/data
+  #   - ./scripts/init.sh:/docker-entrypoint-initdb.d/init.sh
+  #   - ./scripts/create_roles.sh:/create_roles.sh
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready", "-U", "creator", "-d", "figureskatingplus"]
+  #     interval: 30s
+  #     timeout: 60s
+  #     retries: 5
+  #     start_period: 30s
+
+  init_db:
+    image: postgres:14
+    volumes:
+      - ./scripts/init.sh:/init.sh
+    command: bash -c "./init.sh"
+    env_file:
+      - .env
+    depends_on:
+      haproxy:
+        condition: service_healthy
+
+  flyway:
+    image: flyway/flyway
+    volumes:
+      - ./migrations:/flyway/sql
+      - ./scripts/run_migrations.sh:/flyway/run_migrations.sh
+    entrypoint: ["/flyway/run_migrations.sh", "--", "flyway", "&&", "exit 0"]
+    environment:
+      - USER=$CREATOR_NAME
+      - PASSWORD=$CREATOR_PASSWORD
+      - HOST=$HOST
+      - PORT=$PORT
+      - DB=$MY_DB
+      - MIGRATION_VERSION=$MIGRATION_VERSION
+    depends_on:
+      init_db:
+        condition: service_completed_successfully
+      # postgres:
+      #   condition: service_healthy
+  seeding:
+    build:
+      dockerfile: seeding/Dockerfile
+    env_file:
+      - .env
+    depends_on:
+      flyway:
+        condition: service_completed_successfully 
+  create_analytic:
+    image: postgres:14
+    volumes:
+      - ./scripts/create_roles.sh:/create_roles.sh
+    environment:
+      - PGPASSWORD=postgres
+      - POSTGRES_USER=$POSTGRES_USER
+      - POSTGRES_DB=$POSTGRES_DB
+      - POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+      - CREATOR_NAME=$CREATOR_NAME
+      - CREATOR_PASSWORD=$CREATOR_PASSWORD
+      - MY_DB=$MY_DB
+      - HOST=$HOST
+      - PORT=$PORT
+      - ANALYST_NAMES=$ANALYST_NAMES
+    command: bash -c "./create_roles.sh"
+    depends_on:
+      seeding:
+        condition: service_completed_successfully
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter
+    env_file:
+      - .env
+    ports:
+      - 9187:9187
+    environment:
+      DATA_SOURCE_NAME: "postgresql://$CREATOR_NAME:$CREATOR_PASSWORD@$HOST:$PORT/$MY_DB?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: "/etc/queries.yaml"
+    volumes:
+      - ./queries.yaml:/etc/queries.yaml
+    depends_on:
+      - haproxy
+  
+  backend-imitation:
+    build:
+      dockerfile: backend_imitation/Dockerfile
+    env_file:
+      - .env
+    ports:
+      - 8000:8000
+    depends_on:
+      create_analytic:
+        condition: service_completed_successfully
+      # - haproxy
+        # condition: service_healthy
+
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - 9090:9090
+    depends_on:
+      - postgres-exporter
+      - backend-imitation
+  
+  grafana:
+    container_name: grafana
+    hostname: grafana
+    image: grafana/grafana
+    # restart: unless-stopped
+    # user: root
+    # environment:
+      # - GF_SECURITY_ADMIN_PASSWORD=password
+    # volumes:
+    #   - ./grafana/grafana_datasources.yml:/etc/grafana/provisioning/datasources/all.yaml
+    #   - ./grafana/grafana_config.ini:/etc/grafana/config.ini
+    #   - ./grafana/grafana_data:/var/lib/grafana
+    ports:
+      - 3000:3000
+
+  backup:
+    build:
+      dockerfile: backup/Dockerfile
+      args:
+        - BACKUP_RETENTION_COUNT=$BACKUP_RETENTION_COUNT
+        - BACKUP_INTERVAL_CRON=$BACKUP_INTERVAL_CRON
+        - CREATOR_NAME=$CREATOR_NAME
+        - CREATOR_PASSWORD=$CREATOR_PASSWORD
+        - MY_DB=$MY_DB
+        - HOST=$HOST
+        - PORT=$PORT
+    env_file:
+      - .env
+    # environment:
+    #   - BACKUP_RETENTION_COUNT=3
+    #   - BACKUP_INTERVAL_CRON=1
+    volumes:
+      - ./fk_db_backups:/fk_db_backups
+    depends_on:
+      - haproxy
+        # condition: service_healthy
+
+  etcd1: &etcd
+      image: ${PATRONI_TEST_IMAGE:-patroni}
+      # networks: [ demo ]
+      environment:
+          ETCD_LISTEN_PEER_URLS: http://0.0.0.0:2380
+          ETCD_LISTEN_CLIENT_URLS: http://0.0.0.0:2379
+          ETCD_INITIAL_CLUSTER: etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+          ETCD_INITIAL_CLUSTER_STATE: new
+          ETCD_INITIAL_CLUSTER_TOKEN: tutorial
+          ETCD_UNSUPPORTED_ARCH: arm64
+      container_name: demo-etcd1
+      hostname: etcd1
+      command: etcd --name etcd1 --initial-advertise-peer-urls http://etcd1:2380
+
+  etcd2:
+      <<: *etcd
+      container_name: demo-etcd2
+      hostname: etcd2
+      command: etcd --name etcd2 --initial-advertise-peer-urls http://etcd2:2380
+
+  etcd3:
+      <<: *etcd
+      container_name: demo-etcd3
+      hostname: etcd3
+      command: etcd --name etcd3 --initial-advertise-peer-urls http://etcd3:2380
+
+  haproxy:
+      # image: ${PATRONI_TEST_IMAGE:-patroni}
+      # networks: [ demo ]
+      build:
+        dockerfile: Dockerfile
+      env_file: ./patroni.env
+      hostname: haproxy
+      container_name: demo-haproxy
+      ports:
+          - "5000:5000"
+          - "5001:5001"
+          - "7000:7000"
+      # command: haproxy
+      volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg
+      environment: &haproxy_env
+          ETCDCTL_ENDPOINTS: http://etcd1:2379,http://etcd2:2379,http://etcd3:2379
+          PATRONI_ETCD3_HOSTS: "'etcd1:2379','etcd2:2379','etcd3:2379'"
+          PATRONI_SCOPE: my_demo
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://haproxy:7000/stats"]
+        # test: ["CMD-SHELL", "pg_isready", "-U", "postgres", "-d", "postgres", "-h", "haproxy", "-p", "5000"]
+        # test: ["CMD-SHELL", "pg_isready", "-U", "creator", "-d", "figureskatingplus"]
+        interval: 30s
+        timeout: 60s
+        retries: 5
+        start_period: 30s
+
+  patroni1:
+      image: patroni
+      # networks: [ demo ]
+      env_file: ./patroni.env
+      hostname: patroni1
+      container_name: demo-patroni1
+      environment:
+          <<: *haproxy_env
+          PATRONI_NAME: patroni1
+
+  patroni2:
+      image: ${PATRONI_TEST_IMAGE:-patroni}
+      # networks: [ demo ]
+      env_file: ./patroni.env
+      hostname: patroni2
+      container_name: demo-patroni2
+      environment:
+          <<: *haproxy_env
+          PATRONI_NAME: patroni2
+
+  patroni3:
+      image: ${PATRONI_TEST_IMAGE:-patroni}
+      # networks: [ demo ]
+      env_file: ./patroni.env
+      hostname: patroni3
+      container_name: demo-patroni3
+      environment:
+          <<: *haproxy_env
+          PATRONI_NAME: patroni3

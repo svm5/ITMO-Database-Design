@@ -1,0 +1,51 @@
+# pg_stat_statements:
+#   query: |
+#     SELECT
+#       query,
+#       calls
+#     FROM pg_stat_statements
+#   metrics:
+#     - query:
+#         usage: "LABEL"
+#         description: "SQL query text"
+#     - calls:
+#         usage: "COUNTER"
+#         description: "Number of times executed"
+
+pg_stat_statements:
+  query: |
+    SELECT 
+      query,
+      calls,
+      total_time,
+      mean_time,
+      queryid as unique_id
+    FROM pg_stat_statements
+  metrics:
+    - query:
+        usage: "LABEL"
+        description: "Query text"
+    - unique_id:
+        usage: "LABEL"
+        description: "Unique query ID"
+    - calls:
+        usage: "COUNTER"
+        description: "Number of executions"
+    - total_time:
+        usage: "GAUGE"
+        description: "Total time spent (ms)"
+    - mean_time:
+        usage: "GAUGE"
+        description: "Mean execution time (ms)"
+
+pg_postmaster_start_time:
+  query: "SELECT extract(epoch from pg_postmaster_start_time()) as value, 'primary' as instance"
+  metrics:
+    - value:
+        usage: "GAUGE"
+        description: "Postmaster start time"
+        rename: "pg_postmaster_start_time_seconds"
+    - instance:
+        usage: "LABEL"
+        description: "PostgreSQL instance"
+        

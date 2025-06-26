@@ -1,0 +1,11 @@
+CREATE INDEX IF NOT EXISTS bears_account_transactions__user_account_id_idx
+ON bears_account_transactions(user_account_id);
+
+CREATE INDEX IF NOT EXISTS bears_transfer_transactions__user_account_id_idx
+ON bears_transfer_transactions(user_account_from_id);
+
+CREATE INDEX IF NOT EXISTS user_figure_skater_subscribes__user_account_id_idx
+ON user_figure_skater_subscribes(user_account_id);
+
+CREATE INDEX IF NOT EXISTS sportsmen__figure_skater_id_idx
+ON sportsmen(figure_skater_id);
