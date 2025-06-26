@@ -1,0 +1,7 @@
+DROP INDEX IF EXISTS bears_account_transactions__user_account_id_idx;
+
+DROP INDEX IF EXISTS bears_transfer_transactions__user_account_id_idx;
+
+DROP INDEX IF EXISTS user_figure_skater_subscribes__user_account_id_idx;
+
+DROP INDEX IF EXISTS sportsmen__figure_skater_id_idx;
